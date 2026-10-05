@@ -343,7 +343,7 @@ func TestClientVersion(t *testing.T) {
 		profile formatProfile
 		want    string
 	}{
-		{standardProfile, "90US"}, {alternateProfile, "90CN"}, {paged110Profile, "110US"}, {paged100CNProfile, "100CN"}, {paged115CNProfile, "115CN"}, {recoveredProfile, ""}, {formatProfile{id: "future"}, ""},
+		{standardProfile, "90US"}, {alternateProfile, "90CN"}, {paged110Profile, "110US"}, {paged100CNProfile, "100CN"}, {recoveredProfile, ""}, {formatProfile{id: "future"}, ""},
 	} {
 		a := New()
 		a.format = tc.profile

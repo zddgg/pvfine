@@ -24,8 +24,8 @@ func detectArchive(data []byte, sidecarDir string) (detectedArchive, error) {
 			return result, nil
 		}
 	}
-	if dec, pageKeys, keys, hdr, ok := unlockPaged110(data, sidecarDir); ok {
-		return detectedArchive{data: dec, hdr: hdr, keys: keys, format: paged110Profile, pageKeys: pageKeys}, nil
+	if dec, pageKeys, keys, hdr, profile, ok := unlockPaged110(data, sidecarDir); ok {
+		return detectedArchive{data: dec, hdr: hdr, keys: keys, format: profile, pageKeys: pageKeys}, nil
 	}
 	// Recovery remains available even if unrelated sidecar files are present.
 	if hdr, guard, keys, ok := recoverHeader(data); ok {

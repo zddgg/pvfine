@@ -1,0 +1,127 @@
+PVFINE 100CN IMPLEMENTATION VERIFICATION
+========================================
+
+Branch / changed fields
+-----------------------
+Branch: dev
+formatProfile.id: paged100cn
+Archive.ClientVersion(): 100CN
+Input contract: select the original encrypted Script.pvf; sk.dat and DNF.exe are resolved from the same directory.
+Key-chain change: sk.dat RSA candidates are read from PKCS#1/PKCS#8 private keys embedded in DNF.exe/DFO.exe; executable metadata AES-256 candidates unlock the page-key table.
+Read/display change: the decrypted paged archive is passed to the existing SQLite tree index and EditorService without unpacking files to disk.
+
+Four transaction artifacts
+--------------------------
+MODIFIED_FILE: C:\Users\liuwe\game\100CN最后一个版本\pvfine\verification\100cn\MODIFIED_FILE
+DIFF_FILE: C:\Users\liuwe\game\100CN最后一个版本\pvfine\verification\100cn\DIFF_FILE.patch
+VERIFICATION.txt: C:\Users\liuwe\game\100CN最后一个版本\pvfine\verification\100cn\VERIFICATION.txt
+ROLLBACK.sh: C:\Users\liuwe\game\100CN最后一个版本\pvfine\verification\100cn\ROLLBACK.sh
+
+Original fixture hashes (unchanged)
+-----------------------------------
+Script.pvf SHA256: BE452CBD18E1ECF6D86C333D8ADD3796CD9B3EB366C609B8672F3B1B9A71B32C
+DNF.exe SHA256: 27414D0F3BD3F1071A41F0B217A666BB2950DE0B3C1956052705D3F9112C464B
+sk.dat SHA256: 36D163EB364E08C5926A36AD8D90249B29A55E1A0517FD94773D0DCD52662256
+
+BASELINE
+--------
+Command:
+$env:PVF_100CN_DIR='C:\Users\liuwe\game\100CN最后一个版本\DNF_SEASON4_OB_V34.1.6.0_Full'; go test -v ./internal/pvf -run '^TestBaselineCanOpen100CN$' -count=1
+Input: unmodified commit 58623cc plus a public-API probe opening the encrypted Script.pvf.
+Literal result:
+=== RUN   TestBaselineCanOpen100CN
+    baseline_100cn_probe_test.go:10: open encrypted 100CN: pvf: paged110 page key table could not be unlocked
+--- FAIL: TestBaselineCanOpen100CN (0.11s)
+FAIL
+FAIL    pvfine/internal/pvf    0.644s
+FAIL
+BASELINE_EXIT=1
+Exit status: 1
+Behavior/status: baseline does not unlock the 100CN encrypted archive.
+
+MODIFIED — core decrypt/read
+----------------------------
+Command:
+$env:PVF_100CN_DIR='C:\Users\liuwe\game\100CN最后一个版本\DNF_SEASON4_OB_V34.1.6.0_Full'; go test -v ./internal/pvf -run '^TestPaged100CNOpen$' -count=1
+Input: original encrypted Script.pvf with same-directory sk.dat and DNF.exe.
+Literal result:
+=== RUN   TestPaged100CNOpen
+--- PASS: TestPaged100CNOpen (5.12s)
+PASS
+ok      pvfine/internal/pvf    5.617s
+Exit status: 0
+Behavior/status: format=paged100cn, client=100CN, files=2407803, groups=28579, page keys=30, and etc/accountcargo.etc is readable.
+
+MODIFIED — byte-exact encrypted save
+------------------------------------
+Command:
+$env:PVF_100CN_DIR='C:\Users\liuwe\game\100CN最后一个版本\DNF_SEASON4_OB_V34.1.6.0_Full'; go test -v ./internal/pvf -run '^TestPaged100CNNoOpSaveIsByteExact$' -count=1
+Input: original encrypted Script.pvf with no edits.
+Literal result:
+=== RUN   TestPaged100CNNoOpSaveIsByteExact
+--- PASS: TestPaged100CNNoOpSaveIsByteExact (6.32s)
+PASS
+ok      pvfine/internal/pvf    7.005s
+Exit status: 0
+Behavior/status: SaveTo output equals the original encrypted Script.pvf byte for byte.
+
+MODIFIED — read-only tree/editor integration
+--------------------------------------------
+Command:
+$env:PVF_100CN_DIR='C:\Users\liuwe\game\100CN最后一个版本\DNF_SEASON4_OB_V34.1.6.0_Full'; go test -v ./services -run '^TestPaged100CNReadOnlyBrowsing$' -count=1
+Input: original encrypted Script.pvf and companion files; ArchiveService SQLite index and EditorService.
+Literal result:
+=== RUN   TestPaged100CNReadOnlyBrowsing
+2026/10/05 18:26:57 [pvfine:index] sqlite file index rebuild started: files=2407803
+2026/10/05 18:27:08 [pvfine:index] sqlite file index progress: files=2400000/2407803 elapsed=11.285s
+2026/10/05 18:27:20 [pvfine:index] sqlite file index rebuild finished: files=2407803 elapsed=23.966s
+--- PASS: TestPaged100CNReadOnlyBrowsing (29.82s)
+PASS
+ok      pvfine/services        30.151s
+Exit status: 0
+Behavior/status: the root tree is non-empty and etc/accountcargo.etc opens as editor text.
+
+MODIFIED — repository regression/build
+--------------------------------------
+Command: go test ./...
+Input: modified source and built frontend/dist.
+Literal result:
+?       pvfine [no test files]
+ok      pvfine/cmd/annotation-editor (cached)
+?       pvfine/config [no test files]
+ok      pvfine/internal/annotations (cached)
+ok      pvfine/internal/npk (cached)
+ok      pvfine/internal/preview (cached)
+ok      pvfine/internal/pvf (cached)
+ok      pvfine/internal/rendering (cached)
+ok      pvfine/internal/script (cached)
+ok      pvfine/internal/version (cached)
+ok      pvfine/services 7.534s
+Exit status: 0
+
+Command: npm --prefix frontend run build
+Input: Vue 3 frontend source.
+Literal result:
+✓ 12937 modules transformed.
+✓ built in 4.20s
+Exit status: 0
+
+ROLLBACK
+--------
+Command:
+./verification/100cn/ROLLBACK.sh '/mnt/c/Users/liuwe/game/100CN最后一个版本/pvfine-rollback-copy-v2-20261005'
+Input: a separate sparse copy of commit 58623cc with DIFF_FILE.patch applied.
+Literal result:
+ROLLBACK_OK target=/mnt/c/Users/liuwe/game/100CN最后一个版本/pvfine-rollback-copy-v2-20261005 restored=baseline
+Exit status: 0
+
+Restoration verification command: compare SHA256 for README.md, internal/pvf/detect.go, format.go, format_test.go and paged110.go against commit-58623cc worktree; confirm three newly added files are absent.
+Literal result:
+README.md MATCH=True
+internal\pvf\detect.go MATCH=True
+internal\pvf\format.go MATCH=True
+internal\pvf\format_test.go MATCH=True
+internal\pvf\paged110.go MATCH=True
+ROLLBACK_RESTORED=True NEW_FILES_REMOVED=True
+Exit status: 0
+Restored behavior/status: all pre-existing modified files are byte-identical to baseline and all patch-added files are removed in the rollback copy. The active pvfine checkout remains modified with 100CN support.

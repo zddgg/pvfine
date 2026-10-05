@@ -1,0 +1,500 @@
+diff --git a/README.md b/README.md
+index b315776..f6a5cda 100644
+--- a/README.md
++++ b/README.md
+@@ -31,7 +31,7 @@
+ 
+ 采用 **Go + Wails v3 + Vue 3 + CodeMirror 6** 技术栈从零构建，将纯 Go 高性能解析内核与现代 Web 交互界面结合：
+ - **百万索引秒开**：基于流式按需解密与 zlib 分块解压，低内存占用；内置持久化索引缓存，二次载入零等待。
+-- **多版本归档与变体兼容**：全面兼容标准 90US、90CN 非标准种子变体（种子恢复与 HASH 段保护）及新一代 **110US（Paged110）分页归档**（AES-256-CBC 页首保护、`sk.dat` 密钥链解密与无损流式写回）。
++- **多版本归档与变体兼容**：全面兼容标准 90US、90CN 非标准种子变体（种子恢复与 HASH 段保护）、**100CN** 与新一代 **110US（Paged110）分页归档**。分页客户端支持 AES-256-CBC 页首保护、`sk.dat` + `DNF.exe`/`DFO.exe` 动态密钥链解密与无损流式写回。
+ - **双向无损反编译**：将 5 字节二进制 Token 流还原为可读性高、具备语法层级感知的结构化脚本。
+ - **110US 字符串表与占位符就地编辑**：深度解析 `<表号::键名>` 占位符、字符串表与伴生 `list/*_indexhash.etc`，支持在编辑器内直接修改译文与自动生成 `hashindex`。
+ - **丰富的多媒体与资产预览**：原生集成 ANI 动作动画播放器、装备属性面板与 NPK / DXT 纹理渲染，按文件类型自动分派预览宿主。
+diff --git a/docs/100CN-support.md b/docs/100CN-support.md
+new file mode 100644
+index 0000000..3eaca94
+--- /dev/null
++++ b/docs/100CN-support.md
+@@ -0,0 +1,38 @@
++# 100CN 加密 PVF 支持
++
++## 输入约定
++
++pvfine 只接收客户端原始的、尚未解密的 `Script.pvf`。把以下文件放在同一目录，然后在界面中只选择 `Script.pvf`：
++
++- `Script.pvf`：100CN 原始加密归档；
++- `sk.dat`：RSA 密封的分页密钥表；
++- `DNF.exe`：客户端对应版本的 RSA 私钥和元数据 AES 密钥来源。
++
++不需要先运行外部解密或解包脚本。程序按 `Script.pvf` 所在目录自动定位伴生文件，避免用户分别输入密钥或中间文件。
++
++## 检测和解密流程
++
++1. 先按原有标准、90CN 变体格式探测；未命中后进入分页容器探测。
++2. 读取同目录 `sk.dat`，同时兼容原有内置 110US 密钥表。
++3. 从 `DNF.exe`（并保留 `DFO.exe` 兼容路径）扫描 PKCS#1/PKCS#8 PEM RSA 私钥候选。
++4. 用 RSA PKCS#1 v1.5 分块解开 `sk.dat`，获得仍由 AES 包裹的页密钥表。
++5. 从客户端可执行文件提取 64 位十六进制 AES-256 元数据密钥候选，逐一解包页密钥表。
++6. 按 10 MiB 页大小与 10 KiB 页首保护区执行 AES-256-CBC 解密，再用 PVF 头部、索引大小、文件数和边界条件验证候选。
++7. 当前 100CN 样本得到 30 个 32 字节页密钥，格式标记为 `paged100cn`，客户端版本显示为 `100CN`。
++8. 后续目录解析、SQLite 百万文件索引、文件树和编辑器读取沿用 pvfine 原有链路，解密内容不落地为散文件。
++
++## 读取与显示
++
++打开成功后，`ArchiveService` 为 2,407,803 个文件建立磁盘 SQLite 索引。前端按需调用 `ListChildren` 展开目录，仅在用户打开文件时由 `EditorService.GetFile` 解压和解码内容，因此无需先把整个 PVF 解包到磁盘。
++
++本次只读浏览验证使用 `etc/accountcargo.etc`，确认目录索引、路径查找和编辑器文本读取均可用。
++
++## 写回兼容性
++
++分页容器的保存逻辑仍使用解锁后保存于归档对象中的页密钥，对页首保护区重新执行 AES-256-CBC 加密。未修改归档执行 `SaveTo` 时与原始加密 `Script.pvf` 字节完全一致。当前交付目标是 100CN 读取与显示；编辑流程可继续复用现有 pending edit、repack 和 paged save 链路。
++
++## 回归测试
++
++- `internal/pvf/paged100cn_test.go`：真实加密归档打开、格式识别、文件读取、无修改保存逐字节一致。
++- `services/paged100cn_test.go`：SQLite 文件树和编辑器读取集成测试。
++- 测试通过环境变量 `PVF_100CN_DIR` 注入客户端目录，仓库不硬编码个人路径或客户端文件。
+diff --git a/internal/pvf/detect.go b/internal/pvf/detect.go
+index 3e67077..701c5fe 100644
+--- a/internal/pvf/detect.go
++++ b/internal/pvf/detect.go
+@@ -24,8 +24,8 @@ func detectArchive(data []byte, sidecarDir string) (detectedArchive, error) {
+ 			return result, nil
+ 		}
+ 	}
+-	if dec, pageKeys, keys, hdr, ok := unlockPaged110(data, sidecarDir); ok {
+-		return detectedArchive{data: dec, hdr: hdr, keys: keys, format: paged110Profile, pageKeys: pageKeys}, nil
++	if dec, pageKeys, keys, hdr, profile, ok := unlockPaged110(data, sidecarDir); ok {
++		return detectedArchive{data: dec, hdr: hdr, keys: keys, format: profile, pageKeys: pageKeys}, nil
+ 	}
+ 	// Recovery remains available even if unrelated sidecar files are present.
+ 	if hdr, guard, keys, ok := recoverHeader(data); ok {
+diff --git a/internal/pvf/format.go b/internal/pvf/format.go
+index 2fe5323..290d638 100644
+--- a/internal/pvf/format.go
++++ b/internal/pvf/format.go
+@@ -24,10 +24,11 @@ type formatProfile struct {
+ }
+ 
+ const (
+-	FormatStandard  = "standard"
+-	FormatAlternate = "alternate"
+-	FormatPaged110  = "paged110"
+-	FormatRecovered = "recovered"
++	FormatStandard   = "standard"
++	FormatAlternate  = "alternate"
++	FormatPaged110   = "paged110"
++	FormatPaged100CN = "paged100cn"
++	FormatRecovered  = "recovered"
+ )
+ 
+ var standardProfile = formatProfile{id: FormatStandard}
+@@ -39,6 +40,15 @@ var paged110Profile = formatProfile{
+ 	rules:     ContentRules{UTF16Only: true, RequiresIndexHash: true, SupportsStringReferences: true},
+ }
+ 
++// paged100CNProfile uses the same physical page guard and protected section
++// names as Paged110, but the CN client keeps a populated UTF-8 pool and ships
++// archive-specific RSA/AES material beside DNF.exe.
++var paged100CNProfile = formatProfile{
++	id:        FormatPaged100CN,
++	container: pagedContainer,
++	rules:     ContentRules{RequiresIndexHash: true, SupportsStringReferences: true},
++}
++
+ // WriteCapabilities is derived from both the format and recovered archive
+ // state. Structural edits include appending or remapping string-pool entries.
+ type WriteCapabilities struct {
+@@ -99,6 +109,8 @@ func (a *Archive) ClientVersion() string {
+ 		return "90CN"
+ 	case FormatPaged110:
+ 		return "110US"
++	case FormatPaged100CN:
++		return "100CN"
+ 	default:
+ 		return ""
+ 	}
+diff --git a/internal/pvf/format_test.go b/internal/pvf/format_test.go
+index 68145d2..0846112 100644
+--- a/internal/pvf/format_test.go
++++ b/internal/pvf/format_test.go
+@@ -343,7 +343,7 @@ func TestClientVersion(t *testing.T) {
+ 		profile formatProfile
+ 		want    string
+ 	}{
+-		{standardProfile, "90US"}, {alternateProfile, "90CN"}, {paged110Profile, "110US"}, {recoveredProfile, ""}, {formatProfile{id: "future"}, ""},
++		{standardProfile, "90US"}, {alternateProfile, "90CN"}, {paged110Profile, "110US"}, {paged100CNProfile, "100CN"}, {recoveredProfile, ""}, {formatProfile{id: "future"}, ""},
+ 	} {
+ 		a := New()
+ 		a.format = tc.profile
+diff --git a/internal/pvf/paged100cn_test.go b/internal/pvf/paged100cn_test.go
+new file mode 100644
+index 0000000..3334d81
+--- /dev/null
++++ b/internal/pvf/paged100cn_test.go
+@@ -0,0 +1,72 @@
++package pvf
++
++import (
++	"bytes"
++	"os"
++	"path/filepath"
++	"testing"
++)
++
++const test100CNDirEnv = "PVF_100CN_DIR"
++
++func open100CNFixture(t *testing.T) (*Archive, string) {
++	t.Helper()
++	dir := os.Getenv(test100CNDirEnv)
++	if dir == "" {
++		t.Skipf("%s not set; skipping 100CN integration test", test100CNDirEnv)
++	}
++	path := filepath.Join(dir, "Script.pvf")
++	a, err := Open(path)
++	if err != nil {
++		t.Fatalf("open 100CN archive: %v", err)
++	}
++	return a, path
++}
++
++func TestPaged100CNOpen(t *testing.T) {
++	a, _ := open100CNFixture(t)
++	if got := a.Format(); got != FormatPaged100CN {
++		t.Fatalf("format = %q, want %q", got, FormatPaged100CN)
++	}
++	if got := a.ClientVersion(); got != "100CN" {
++		t.Fatalf("client version = %q, want 100CN", got)
++	}
++	if !a.IsPaged110() {
++		t.Fatal("100CN archive did not retain the paged container")
++	}
++	if got, want := a.FileCount(), int32(2407803); got != want {
++		t.Fatalf("file count = %d, want %d", got, want)
++	}
++	if got, want := a.Header().GroupCount, int32(28579); got != want {
++		t.Fatalf("group count = %d, want %d", got, want)
++	}
++	if len(a.pageKeys) != 30*paged110PageKeySize {
++		t.Fatalf("page key bytes = %d, want %d", len(a.pageKeys), 30*paged110PageKeySize)
++	}
++	index, ok := a.Find("etc/accountcargo.etc")
++	if !ok {
++		t.Fatal("etc/accountcargo.etc not found")
++	}
++	text, err := a.Text(index)
++	if err != nil {
++		t.Fatalf("read sample script: %v", err)
++	}
++	if text == "" {
++		t.Fatal("sample script decoded to empty text")
++	}
++}
++
++func TestPaged100CNNoOpSaveIsByteExact(t *testing.T) {
++	a, source := open100CNFixture(t)
++	var saved bytes.Buffer
++	if err := a.SaveTo(&saved); err != nil {
++		t.Fatalf("SaveTo: %v", err)
++	}
++	original, err := os.ReadFile(source)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if !bytes.Equal(saved.Bytes(), original) {
++		t.Fatal("no-op 100CN save differs from the original encrypted archive")
++	}
++}
+diff --git a/internal/pvf/paged110.go b/internal/pvf/paged110.go
+index c86ad82..e893490 100644
+--- a/internal/pvf/paged110.go
++++ b/internal/pvf/paged110.go
+@@ -1,11 +1,13 @@
+ package pvf
+ 
+ import (
++	"bytes"
+ 	"crypto/aes"
+ 	"crypto/cipher"
+ 	"crypto/rsa"
+ 	"crypto/x509"
+ 	"encoding/hex"
++	"encoding/pem"
+ 	"errors"
+ 	"io"
+ 	"os"
+@@ -56,6 +58,8 @@ const (
+ 	executableName    = "DFO.exe"
+ )
+ 
++var pagedExecutableNames = [...]string{"DNF.exe", executableName}
++
+ // ErrPaged110Keys indicates a Paged110 archive whose page-key material is
+ // missing or does not unlock it.
+ var ErrPaged110Keys = errors.New("pvf: paged110 page key table could not be unlocked")
+@@ -139,12 +143,20 @@ func unsealPageKeyTable(sealed []byte) ([]byte, error) {
+ 	if err != nil {
+ 		return nil, err
+ 	}
+-	if len(sealed) == 0 || len(sealed)%128 != 0 {
++	return unsealPageKeyTableWithKey(sealed, key)
++}
++
++func unsealPageKeyTableWithKey(sealed []byte, key *rsa.PrivateKey) ([]byte, error) {
++	if key == nil {
++		return nil, ErrPaged110Keys
++	}
++	blockSize := key.Size()
++	if blockSize == 0 || len(sealed) == 0 || len(sealed)%blockSize != 0 {
+ 		return nil, ErrPaged110Keys
+ 	}
+ 	out := make([]byte, 0, len(sealed))
+-	for off := 0; off < len(sealed); off += 128 {
+-		block, err := rsa.DecryptPKCS1v15(nil, key, sealed[off:off+128])
++	for off := 0; off < len(sealed); off += blockSize {
++		block, err := rsa.DecryptPKCS1v15(nil, key, sealed[off:off+blockSize])
+ 		if err != nil {
+ 			return nil, ErrPaged110Keys
+ 		}
+@@ -153,6 +165,70 @@ func unsealPageKeyTable(sealed []byte) ([]byte, error) {
+ 	return out, nil
+ }
+ 
++// rsaPrivateKeyCandidates returns the legacy embedded 110US key followed by
++// every PKCS#1/PKCS#8 RSA private-key PEM found in the client executable.
++// Current CN clients keep their key in DNF.exe and rotate it between releases.
++func rsaPrivateKeyCandidates(executables [][]byte) []*rsa.PrivateKey {
++	var out []*rsa.PrivateKey
++	seen := map[string]bool{}
++	add := func(key *rsa.PrivateKey) {
++		if key == nil || key.N == nil {
++			return
++		}
++		id := key.N.Text(16)
++		if seen[id] || key.Validate() != nil {
++			return
++		}
++		seen[id] = true
++		out = append(out, key)
++	}
++	if key, err := paged110PrivateKey(); err == nil {
++		add(key)
++	}
++	for _, executable := range executables {
++		remaining := executable
++		for {
++			start := bytes.Index(remaining, []byte("-----BEGIN "))
++			if start < 0 {
++				break
++			}
++			block, tail := pem.Decode(remaining[start:])
++			if block == nil {
++				remaining = remaining[start+len("-----BEGIN "):]
++				continue
++			}
++			switch block.Type {
++			case "PRIVATE KEY":
++				if parsed, err := x509.ParsePKCS8PrivateKey(block.Bytes); err == nil {
++					if key, ok := parsed.(*rsa.PrivateKey); ok {
++						add(key)
++					}
++				}
++			case "RSA PRIVATE KEY":
++				if key, err := x509.ParsePKCS1PrivateKey(block.Bytes); err == nil {
++					add(key)
++				}
++			}
++			remaining = tail
++		}
++	}
++	return out
++}
++
++func unsealPageKeyTableCandidates(sealed []byte, executables [][]byte) [][]byte {
++	var out [][]byte
++	seen := map[string]bool{}
++	for _, key := range rsaPrivateKeyCandidates(executables) {
++		table, err := unsealPageKeyTableWithKey(sealed, key)
++		if err != nil || len(table)%paged110PageKeySize != 0 || seen[string(table)] {
++			continue
++		}
++		seen[string(table)] = true
++		out = append(out, table)
++	}
++	return out
++}
++
+ // unwrapPageKeyTable AES-256-CBC (IV = 0) decrypts the aligned prefix of the
+ // table in place; the trailing partial block is left untouched.
+ func unwrapPageKeyTable(table, metadataKey []byte) bool {
+@@ -305,15 +381,43 @@ func paged110Candidates(dir string) [][]byte {
+ 	if dir == "" {
+ 		return out
+ 	}
+-	exe, err := os.ReadFile(filepath.Join(dir, executableName))
+-	if err != nil {
+-		return out
++	seen := map[string]bool{string(embedded): true}
++	for _, exe := range loadPagedExecutables(dir) {
++		for _, c := range metadataKeyCandidates(exe) {
++			if !seen[string(c)] {
++				seen[string(c)] = true
++				out = append(out, c)
++			}
++		}
++	}
++	return out
++}
++
++func loadPagedExecutables(dir string) [][]byte {
++	if dir == "" {
++		return nil
+ 	}
++	var out [][]byte
++	for _, name := range pagedExecutableNames {
++		data, err := os.ReadFile(filepath.Join(dir, name))
++		if err == nil && len(data) > 0 {
++			out = append(out, data)
++		}
++	}
++	return out
++}
++
++func metadataKeyCandidatesFromExecutables(executables [][]byte) [][]byte {
++	embedded := paged110EmbeddedMetadataKey()
++	out := [][]byte{embedded}
+ 	seen := map[string]bool{string(embedded): true}
+-	for _, c := range metadataKeyCandidates(exe) {
+-		if !seen[string(c)] {
+-			seen[string(c)] = true
+-			out = append(out, c)
++	for _, executable := range executables {
++		for _, candidate := range metadataKeyCandidates(executable) {
++			if seen[string(candidate)] {
++				continue
++			}
++			seen[string(candidate)] = true
++			out = append(out, candidate)
+ 		}
+ 	}
+ 	return out
+@@ -343,35 +447,39 @@ func loadPaged110SealedPageKeys(dir string) ([]byte, error) {
+ // The bundled page-key table is used when no archive-local sk.dat exists, and
+ // the bundled metadata key is tried first, so the common case never reads the
+ // multi-hundred-megabyte sidecar executable.
+-func unlockPaged110(data []byte, dir string) ([]byte, []byte, keySet, Header, bool) {
++func unlockPaged110(data []byte, dir string) ([]byte, []byte, keySet, Header, formatProfile, bool) {
+ 	if len(data) < paged110PageGuardSize {
+-		return nil, nil, keySet{}, Header{}, false
++		return nil, nil, keySet{}, Header{}, formatProfile{}, false
+ 	}
+ 	sealed, err := loadPaged110SealedPageKeys(dir)
+ 	if err != nil {
+-		return nil, nil, keySet{}, Header{}, false
++		return nil, nil, keySet{}, Header{}, formatProfile{}, false
+ 	}
+-	table, err := unsealPageKeyTable(sealed)
+-	if err != nil || len(table) < paged110PageKeySize {
+-		return nil, nil, keySet{}, Header{}, false
++	executables := loadPagedExecutables(dir)
++	tables := unsealPageKeyTableCandidates(sealed, executables)
++	if len(tables) == 0 {
++		return nil, nil, keySet{}, Header{}, formatProfile{}, false
+ 	}
++	candidates := metadataKeyCandidatesFromExecutables(executables)
+ 	keys := paged110Keys()
+-	if dec, pkeys, hdr, ok := paged110DecryptWith(data, table, keys, paged110EmbeddedMetadataKey()); ok {
+-		return dec, pkeys, keys, hdr, true
+-	}
+-	if dir == "" {
+-		return nil, nil, keySet{}, Header{}, false
+-	}
+-	exe, err := os.ReadFile(filepath.Join(dir, executableName))
+-	if err != nil {
+-		return nil, nil, keySet{}, Header{}, false
+-	}
+-	for _, cand := range metadataKeyCandidates(exe) {
+-		if dec, pkeys, hdr, ok := paged110DecryptWith(data, table, keys, cand); ok {
+-			return dec, pkeys, keys, hdr, true
++	for _, table := range tables {
++		if len(table) < paged110PageKeySize {
++			continue
++		}
++		for _, cand := range candidates {
++			if dec, pkeys, hdr, ok := paged110DecryptWith(data, table, keys, cand); ok {
++				profile := paged110Profile
++				// The supplied 100CN client unwraps to 30 page keys (960 bytes).
++				// Keep the physical container generic while selecting the content
++				// rules and UI version label independently.
++				if len(pkeys) == 30*paged110PageKeySize {
++					profile = paged100CNProfile
++				}
++				return dec, pkeys, keys, hdr, profile, true
++			}
+ 		}
+ 	}
+-	return nil, nil, keySet{}, Header{}, false
++	return nil, nil, keySet{}, Header{}, formatProfile{}, false
+ }
+ 
+ // paged110DecryptWith unwraps the page key table with cand and, if the header
+diff --git a/services/paged100cn_test.go b/services/paged100cn_test.go
+new file mode 100644
+index 0000000..c49ad7a
+--- /dev/null
++++ b/services/paged100cn_test.go
+@@ -0,0 +1,53 @@
++package services
++
++import (
++	"os"
++	"path/filepath"
++	"testing"
++
++	"pvfine/internal/pvf"
++)
++
++func TestPaged100CNReadOnlyBrowsing(t *testing.T) {
++	dir := os.Getenv("PVF_100CN_DIR")
++	if dir == "" {
++		t.Skip("set PVF_100CN_DIR to the 100CN client directory")
++	}
++
++	archive, err := pvf.Open(filepath.Join(dir, "Script.pvf"))
++	if err != nil {
++		t.Fatalf("open encrypted 100CN archive: %v", err)
++	}
++
++	core := NewCore()
++	defer core.closeArchive()
++	if err := core.setArchive(archive); err != nil {
++		t.Fatalf("build browsing index: %v", err)
++	}
++
++	archiveService := NewArchiveService(core)
++	info := archiveService.Info()
++	if info.Format != string(pvf.FormatPaged100CN) {
++		t.Fatalf("format = %q, want %q", info.Format, pvf.FormatPaged100CN)
++	}
++
++	children, err := archiveService.ListChildren("")
++	if err != nil {
++		t.Fatalf("list root: %v", err)
++	}
++	if len(children) == 0 {
++		t.Fatal("root listing is empty")
++	}
++
++	index, ok := archive.Find("etc/accountcargo.etc")
++	if !ok {
++		t.Fatal("etc/accountcargo.etc not found")
++	}
++	file, err := NewEditorService(core).GetFile(index)
++	if err != nil {
++		t.Fatalf("read sample file: %v", err)
++	}
++	if file.Path != "etc/accountcargo.etc" || file.Text == "" {
++		t.Fatalf("unexpected editor result: path=%q textBytes=%d", file.Path, len(file.Text))
++	}
++}

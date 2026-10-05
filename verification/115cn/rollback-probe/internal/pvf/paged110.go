@@ -472,11 +472,8 @@ func unlockPaged110(data []byte, dir string) ([]byte, []byte, keySet, Header, fo
 				// The supplied 100CN client unwraps to 30 page keys (960 bytes).
 				// Keep the physical container generic while selecting the content
 				// rules and UI version label independently.
-				switch len(pkeys) / paged110PageKeySize {
-				case 30:
+				if len(pkeys) == 30*paged110PageKeySize {
 					profile = paged100CNProfile
-				case 81:
-					profile = paged115CNProfile
 				}
 				return dec, pkeys, keys, hdr, profile, true
 			}

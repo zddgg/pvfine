@@ -28,7 +28,6 @@ const (
 	FormatAlternate  = "alternate"
 	FormatPaged110   = "paged110"
 	FormatPaged100CN = "paged100cn"
-	FormatPaged115CN = "paged115cn"
 	FormatRecovered  = "recovered"
 )
 
@@ -50,13 +49,6 @@ var paged100CNProfile = formatProfile{
 	rules:     ContentRules{RequiresIndexHash: true, SupportsStringReferences: true},
 }
 
-// paged115CNProfile retains the mixed ANSI/UTF-16 content rules used by the
-// CN client while expanding the archive to 81 protected pages.
-var paged115CNProfile = formatProfile{
-	id:        FormatPaged115CN,
-	container: pagedContainer,
-	rules:     ContentRules{RequiresIndexHash: true, SupportsStringReferences: true},
-}
 
 // WriteCapabilities is derived from both the format and recovered archive
 // state. Structural edits include appending or remapping string-pool entries.
@@ -120,8 +112,6 @@ func (a *Archive) ClientVersion() string {
 		return "110US"
 	case FormatPaged100CN:
 		return "100CN"
-	case FormatPaged115CN:
-		return "115CN"
 	default:
 		return ""
 	}

@@ -1,0 +1,125 @@
+PVFINE 115CN IMPLEMENTATION VERIFICATION
+=========================================
+
+Branch / changed fields
+-----------------------
+Branch: dev
+formatProfile.id: paged115cn
+Archive.ClientVersion(): 115CN
+Page-key classification: 30 keys -> 100CN; 81 keys -> 115CN; all other valid paged key tables retain the 110US profile.
+Input contract: select the original encrypted Script.pvf; sk.dat and DNF.exe are resolved from the same directory.
+Read/display path: encrypted archive -> RSA/AES key discovery -> paged decrypt -> NKPI parser -> SQLite file tree -> EditorService.
+
+Four transaction artifacts
+--------------------------
+MODIFIED_FILE: C:\Users\liuwe\game\100CN最后一个版本\pvfine\verification\115cn\MODIFIED_FILE
+DIFF_FILE: C:\Users\liuwe\game\100CN最后一个版本\pvfine\verification\115cn\DIFF_FILE.patch
+VERIFICATION.txt: C:\Users\liuwe\game\100CN最后一个版本\pvfine\verification\115cn\VERIFICATION.txt
+ROLLBACK.sh: C:\Users\liuwe\game\100CN最后一个版本\pvfine\verification\115cn\ROLLBACK.sh
+
+Original fixture hashes (unchanged)
+-----------------------------------
+Script.pvf SHA256: 06E6AE96D58360C25180A66D335706BFC816F436D229388E235176B604347E9A
+DNF.exe SHA256: D8F702B3B735A127D04388B54951553E2F4DE5E5E86BCF936F6821D34DDD2332
+sk.dat SHA256: 0D9A448863E581F97EEB65F5961F37D70B8A016B4EE4D63FF6022A74565BAE06
+
+BASELINE
+--------
+Command:
+$env:PVF_115CN_DIR='C:\Users\liuwe\game\100CN最后一个版本\115cn-client'; go test -v ./internal/pvf -run '^TestBaseline115CNClassification$' -count=1
+Input: the 100CN-enabled pvfine tree before 115CN classification, plus a public-API probe opening the original encrypted 115CN Script.pvf.
+Literal result:
+=== RUN   TestBaseline115CNClassification
+    baseline_115_probe_test.go:16: client version="110US", want 115CN
+--- FAIL: TestBaseline115CNClassification (11.53s)
+FAIL
+FAIL    pvfine/internal/pvf    12.202s
+FAIL
+Exit status: 1
+Behavior/status: the shared decryptor already unlocks the archive, but the 81-key 115CN archive is incorrectly classified as 110US.
+
+MODIFIED — decrypt/read/classification
+--------------------------------------
+Command:
+$env:PVF_115CN_DIR='C:\Users\liuwe\game\100CN最后一个版本\115cn-client'; go test -v ./internal/pvf -run '^TestPaged115CNOpen$' -count=1
+Input: original encrypted Script.pvf with same-directory sk.dat and DNF.exe.
+Literal result:
+=== RUN   TestPaged115CNOpen
+--- PASS: TestPaged115CNOpen (11.96s)
+PASS
+ok      pvfine/internal/pvf    12.815s
+Exit status: 0
+Behavior/status: format=paged115cn, client=115CN, files=6259057, groups=96237, page keys=81, and etc/accountcargo.etc is readable.
+
+MODIFIED — byte-exact encrypted save
+------------------------------------
+Command:
+$env:PVF_115CN_DIR='C:\Users\liuwe\game\100CN最后一个版本\115cn-client'; go test -v ./internal/pvf -run '^TestPaged115CNNoOpSaveIsByteExact$' -count=1
+Input: original encrypted 115CN Script.pvf with no edits.
+Literal result:
+=== RUN   TestPaged115CNNoOpSaveIsByteExact
+--- PASS: TestPaged115CNNoOpSaveIsByteExact (16.55s)
+PASS
+ok      pvfine/internal/pvf    17.553s
+Exit status: 0
+Behavior/status: SaveTo output equals the original encrypted 844,738,922-byte Script.pvf byte for byte.
+
+MODIFIED — read-only tree/editor integration
+--------------------------------------------
+Command:
+$env:PVF_115CN_DIR='C:\Users\liuwe\game\100CN最后一个版本\115cn-client'; go test -v ./services -run '^TestPaged115CNReadOnlyBrowsing$' -count=1
+Input: original encrypted Script.pvf and companion files; ArchiveService SQLite index and EditorService.
+Literal result:
+=== RUN   TestPaged115CNReadOnlyBrowsing
+2026/10/05 18:40:09 [pvfine:index] sqlite file index rebuild started: files=6259057
+2026/10/05 18:40:34 [pvfine:index] sqlite file index progress: files=6200000/6259057 elapsed=25.516s
+2026/10/05 18:41:07 [pvfine:index] sqlite file index rebuild finished: files=6259057 elapsed=58.309s
+--- PASS: TestPaged115CNReadOnlyBrowsing (71.03s)
+PASS
+ok      pvfine/services        71.272s
+Exit status: 0
+Behavior/status: the root tree is non-empty and etc/accountcargo.etc opens as editor text without unpacking the archive to disk.
+
+MODIFIED — repository regression/build
+--------------------------------------
+Command: go test ./...
+Input: modified source; real-client tests skip unless their environment variables are set.
+Literal result:
+?       pvfine [no test files]
+ok      pvfine/cmd/annotation-editor (cached)
+?       pvfine/config [no test files]
+ok      pvfine/internal/annotations (cached)
+ok      pvfine/internal/npk (cached)
+ok      pvfine/internal/preview (cached)
+ok      pvfine/internal/pvf 13.594s
+ok      pvfine/internal/rendering (cached)
+ok      pvfine/internal/script 0.282s
+ok      pvfine/internal/version 0.818s
+ok      pvfine/services 8.964s
+Exit status: 0
+
+Command: npm --prefix frontend run build
+Input: Vue 3 frontend source.
+Literal result:
+✓ 12937 modules transformed.
+✓ built in 3.07s
+Exit status: 0
+
+ROLLBACK
+--------
+Command:
+./verification/115cn/ROLLBACK.sh '/mnt/c/Users/liuwe/game/100CN最后一个版本/pvfine-115-rollback-copy-v2-20261005'
+Input: a separate sparse copy of the 100CN-enabled baseline with DIFF_FILE.patch applied.
+Literal result:
+ROLLBACK_OK target=/mnt/c/Users/liuwe/game/100CN最后一个版本/pvfine-115-rollback-copy-v2-20261005 restored=100CN-baseline
+Exit status: 0
+
+Restoration verification command: compare SHA256 for README.md, internal/pvf/format.go, format_test.go and paged110.go against their pre-115 copy; confirm three 115CN files are absent.
+Literal result:
+internal\pvf\format_test.go MATCH=True
+internal\pvf\paged110.go MATCH=True
+README.md MATCH=True
+internal\pvf\format.go MATCH=True
+ROLLBACK_RESTORED=True NEW_FILES_REMOVED=True
+Exit status: 0
+Restored behavior/status: all files touched by the incremental 115CN patch are byte-identical to the 100CN baseline and all 115CN-only files are removed in the rollback copy. The active pvfine checkout remains modified with both 100CN and 115CN support.

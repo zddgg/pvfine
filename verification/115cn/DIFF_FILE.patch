@@ -1,0 +1,260 @@
+diff --git a/README.md b/README.md
+index f6a5cda..477db78 100644
+--- a/README.md
++++ b/README.md
+@@ -31,7 +31,7 @@
+ 
+ 采用 **Go + Wails v3 + Vue 3 + CodeMirror 6** 技术栈从零构建，将纯 Go 高性能解析内核与现代 Web 交互界面结合：
+ - **百万索引秒开**：基于流式按需解密与 zlib 分块解压，低内存占用；内置持久化索引缓存，二次载入零等待。
+-- **多版本归档与变体兼容**：全面兼容标准 90US、90CN 非标准种子变体（种子恢复与 HASH 段保护）、**100CN** 与新一代 **110US（Paged110）分页归档**。分页客户端支持 AES-256-CBC 页首保护、`sk.dat` + `DNF.exe`/`DFO.exe` 动态密钥链解密与无损流式写回。
++- **多版本归档与变体兼容**：全面兼容标准 90US、90CN 非标准种子变体（种子恢复与 HASH 段保护）、**100CN、115CN** 与新一代 **110US（Paged110）分页归档**。分页客户端支持 AES-256-CBC 页首保护、`sk.dat` + `DNF.exe`/`DFO.exe` 动态密钥链解密与无损流式写回。
+ - **双向无损反编译**：将 5 字节二进制 Token 流还原为可读性高、具备语法层级感知的结构化脚本。
+ - **110US 字符串表与占位符就地编辑**：深度解析 `<表号::键名>` 占位符、字符串表与伴生 `list/*_indexhash.etc`，支持在编辑器内直接修改译文与自动生成 `hashindex`。
+ - **丰富的多媒体与资产预览**：原生集成 ANI 动作动画播放器、装备属性面板与 NPK / DXT 纹理渲染，按文件类型自动分派预览宿主。
+diff --git a/docs/115CN-support.md b/docs/115CN-support.md
+new file mode 100644
+index 0000000..a0aa36b
+--- /dev/null
++++ b/docs/115CN-support.md
+@@ -0,0 +1,39 @@
++# 115CN 加密 PVF 支持
++
++## 输入约定
++
++pvfine 只接收客户端原始、尚未解密的 `Script.pvf`。把同一客户端版本的以下文件放在同一目录，在界面中只选择 `Script.pvf`：
++
++- `Script.pvf`：115CN 原始外层加密归档；
++- `sk.dat`：RSA 密封的分页密钥表；
++- `DNF.exe`：RSA 私钥与 AES-256 包装密钥来源。
++
++程序按 PVF 所在目录自动发现伴生文件，不要求用户先解密或解包。
++
++## 115CN 密钥链与格式
++
++115CN 延续分页 AES 外层，但密钥材料和归档规模发生变化：
++
++1. `sk.dat` 为 2,944 字节，由 23 个 RSA-1024 PKCS#1 v1.5 密文块组成。
++2. pvfine 从 `DNF.exe` 扫描 PKCS#1/PKCS#8 PEM 私钥并逐块解封，得到 2,592 字节。
++3. 从 `DNF.exe` 扫描 AES 包装密钥候选，以 AES-256-CBC、全零 IV 解开对齐部分。
++4. 解包结果为 81 把、每把 32 字节的分页密钥。
++5. `Script.pvf` 每 `0xA00000`（10 MiB）为一页，每页前 `0x2800`（10 KiB）执行 AES-256-CBC。
++6. 候选必须通过 `iNfO` 头流解码后的 `nkpi` 魔数、文件表边界和分组数据边界验证。
++7. 81 把页密钥的归档识别为 `paged115cn`，客户端版本显示为 `115CN`；30 把密钥仍识别为 `100CN`。
++
++## 读取和显示
++
++当前样本包含 6,259,057 条文件记录和 96,237 个数据分组。打开后使用原有磁盘 SQLite 文件索引，前端通过 `ListChildren` 按需展开目录，通过 `EditorService.GetFile` 按需解压并显示文件，不会先把六百余万个文件写入磁盘。
++
++集成测试验证了根目录枚举以及 `etc/accountcargo.etc` 的文本读取。
++
++## 保存兼容性
++
++归档对象保留解锁后的 81 把页密钥。现有分页保存路径会重新加密每页保护区；未编辑归档执行 `SaveTo` 后与输入的加密 `Script.pvf` 逐字节一致。
++
++## 测试入口
++
++- `internal/pvf/paged115cn_test.go`：真实加密归档识别、记录和分组数量、样本文件读取、无修改保存一致性。
++- `services/paged115cn_test.go`：六百余万文件 SQLite 树索引与编辑器读取。
++- 客户端目录通过 `PVF_115CN_DIR` 环境变量注入，仓库不硬编码个人路径和密钥。
+diff --git a/internal/pvf/format.go b/internal/pvf/format.go
+index cbc9af6..523d5e9 100644
+--- a/internal/pvf/format.go
++++ b/internal/pvf/format.go
+@@ -28,6 +28,7 @@ const (
+ 	FormatAlternate  = "alternate"
+ 	FormatPaged110   = "paged110"
+ 	FormatPaged100CN = "paged100cn"
++	FormatPaged115CN = "paged115cn"
+ 	FormatRecovered  = "recovered"
+ )
+ 
+@@ -49,6 +50,13 @@ var paged100CNProfile = formatProfile{
+ 	rules:     ContentRules{RequiresIndexHash: true, SupportsStringReferences: true},
+ }
+ 
++// paged115CNProfile retains the mixed ANSI/UTF-16 content rules used by the
++// CN client while expanding the archive to 81 protected pages.
++var paged115CNProfile = formatProfile{
++	id:        FormatPaged115CN,
++	container: pagedContainer,
++	rules:     ContentRules{RequiresIndexHash: true, SupportsStringReferences: true},
++}
+ 
+ // WriteCapabilities is derived from both the format and recovered archive
+ // state. Structural edits include appending or remapping string-pool entries.
+@@ -112,6 +120,8 @@ func (a *Archive) ClientVersion() string {
+ 		return "110US"
+ 	case FormatPaged100CN:
+ 		return "100CN"
++	case FormatPaged115CN:
++		return "115CN"
+ 	default:
+ 		return ""
+ 	}
+diff --git a/internal/pvf/format_test.go b/internal/pvf/format_test.go
+index 0846112..50e58ad 100644
+--- a/internal/pvf/format_test.go
++++ b/internal/pvf/format_test.go
+@@ -343,7 +343,7 @@ func TestClientVersion(t *testing.T) {
+ 		profile formatProfile
+ 		want    string
+ 	}{
+-		{standardProfile, "90US"}, {alternateProfile, "90CN"}, {paged110Profile, "110US"}, {paged100CNProfile, "100CN"}, {recoveredProfile, ""}, {formatProfile{id: "future"}, ""},
++		{standardProfile, "90US"}, {alternateProfile, "90CN"}, {paged110Profile, "110US"}, {paged100CNProfile, "100CN"}, {paged115CNProfile, "115CN"}, {recoveredProfile, ""}, {formatProfile{id: "future"}, ""},
+ 	} {
+ 		a := New()
+ 		a.format = tc.profile
+diff --git a/internal/pvf/paged110.go b/internal/pvf/paged110.go
+index e893490..915abc6 100644
+--- a/internal/pvf/paged110.go
++++ b/internal/pvf/paged110.go
+@@ -472,8 +472,11 @@ func unlockPaged110(data []byte, dir string) ([]byte, []byte, keySet, Header, fo
+ 				// The supplied 100CN client unwraps to 30 page keys (960 bytes).
+ 				// Keep the physical container generic while selecting the content
+ 				// rules and UI version label independently.
+-				if len(pkeys) == 30*paged110PageKeySize {
++				switch len(pkeys) / paged110PageKeySize {
++				case 30:
+ 					profile = paged100CNProfile
++				case 81:
++					profile = paged115CNProfile
+ 				}
+ 				return dec, pkeys, keys, hdr, profile, true
+ 			}
+diff --git a/internal/pvf/paged115cn_test.go b/internal/pvf/paged115cn_test.go
+new file mode 100644
+index 0000000..3c7977f
+--- /dev/null
++++ b/internal/pvf/paged115cn_test.go
+@@ -0,0 +1,72 @@
++package pvf
++
++import (
++	"bytes"
++	"os"
++	"path/filepath"
++	"testing"
++)
++
++const test115CNDirEnv = "PVF_115CN_DIR"
++
++func open115CNFixture(t *testing.T) (*Archive, string) {
++	t.Helper()
++	dir := os.Getenv(test115CNDirEnv)
++	if dir == "" {
++		t.Skipf("%s not set; skipping 115CN integration test", test115CNDirEnv)
++	}
++	path := filepath.Join(dir, "Script.pvf")
++	a, err := Open(path)
++	if err != nil {
++		t.Fatalf("open 115CN archive: %v", err)
++	}
++	return a, path
++}
++
++func TestPaged115CNOpen(t *testing.T) {
++	a, _ := open115CNFixture(t)
++	if got := a.Format(); got != FormatPaged115CN {
++		t.Fatalf("format = %q, want %q", got, FormatPaged115CN)
++	}
++	if got := a.ClientVersion(); got != "115CN" {
++		t.Fatalf("client version = %q, want 115CN", got)
++	}
++	if !a.IsPaged110() {
++		t.Fatal("115CN archive did not retain the paged container")
++	}
++	if got, want := a.FileCount(), int32(6259057); got != want {
++		t.Fatalf("file count = %d, want %d", got, want)
++	}
++	if got, want := a.Header().GroupCount, int32(96237); got != want {
++		t.Fatalf("group count = %d, want %d", got, want)
++	}
++	if len(a.pageKeys) != 81*paged110PageKeySize {
++		t.Fatalf("page key bytes = %d, want %d", len(a.pageKeys), 81*paged110PageKeySize)
++	}
++	index, ok := a.Find("etc/accountcargo.etc")
++	if !ok {
++		t.Fatal("etc/accountcargo.etc not found")
++	}
++	text, err := a.Text(index)
++	if err != nil {
++		t.Fatalf("read sample script: %v", err)
++	}
++	if text == "" {
++		t.Fatal("sample script decoded to empty text")
++	}
++}
++
++func TestPaged115CNNoOpSaveIsByteExact(t *testing.T) {
++	a, source := open115CNFixture(t)
++	var saved bytes.Buffer
++	if err := a.SaveTo(&saved); err != nil {
++		t.Fatalf("SaveTo: %v", err)
++	}
++	original, err := os.ReadFile(source)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if !bytes.Equal(saved.Bytes(), original) {
++		t.Fatal("no-op 115CN save differs from the original encrypted archive")
++	}
++}
+diff --git a/services/paged115cn_test.go b/services/paged115cn_test.go
+new file mode 100644
+index 0000000..cd69e04
+--- /dev/null
++++ b/services/paged115cn_test.go
+@@ -0,0 +1,53 @@
++package services
++
++import (
++	"os"
++	"path/filepath"
++	"testing"
++
++	"pvfine/internal/pvf"
++)
++
++func TestPaged115CNReadOnlyBrowsing(t *testing.T) {
++	dir := os.Getenv("PVF_115CN_DIR")
++	if dir == "" {
++		t.Skip("set PVF_115CN_DIR to the 115CN client directory")
++	}
++
++	archive, err := pvf.Open(filepath.Join(dir, "Script.pvf"))
++	if err != nil {
++		t.Fatalf("open encrypted 115CN archive: %v", err)
++	}
++
++	core := NewCore()
++	defer core.closeArchive()
++	if err := core.setArchive(archive); err != nil {
++		t.Fatalf("build browsing index: %v", err)
++	}
++
++	archiveService := NewArchiveService(core)
++	info := archiveService.Info()
++	if info.Format != string(pvf.FormatPaged115CN) {
++		t.Fatalf("format = %q, want %q", info.Format, pvf.FormatPaged115CN)
++	}
++
++	children, err := archiveService.ListChildren("")
++	if err != nil {
++		t.Fatalf("list root: %v", err)
++	}
++	if len(children) == 0 {
++		t.Fatal("root listing is empty")
++	}
++
++	index, ok := archive.Find("etc/accountcargo.etc")
++	if !ok {
++		t.Fatal("etc/accountcargo.etc not found")
++	}
++	file, err := NewEditorService(core).GetFile(index)
++	if err != nil {
++		t.Fatalf("read sample file: %v", err)
++	}
++	if file.Path != "etc/accountcargo.etc" || file.Text == "" {
++		t.Fatalf("unexpected editor result: path=%q textBytes=%d", file.Path, len(file.Text))
++	}
++}
